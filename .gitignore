@@ -1,0 +1,34 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sln
+
+# Unreal Engine
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+*.pdb
+*.pch
+*.db
+*.bin
+__ExternalActors__/
+__ExternalObjects__/
+
+# Builds
+Build/
+*.exe
+*.dll
+*.lib
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary
+*.tmp
+*.temp
