@@ -3,10 +3,130 @@
 #include "Gameplay/WA_PlayerController.h"
 
 #include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/Button.h"
+#include "Components/ContentWidget.h"
+#include "Components/Image.h"
+#include "Components/PanelWidget.h"
+#include "Components/ProgressBar.h"
+#include "Components/TextBlock.h"
 #include "Gameplay/WA_GameMode.h"
-#include "Gameplay/WA_GameState.h"
-#include "UI/Widgets/W_GameHUD.h"
-#include "UI/Widgets/W_GameOver.h"
+#include "UObject/ConstructorHelpers.h"
+
+namespace
+{
+template <typename WidgetType>
+WidgetType* FindNamedWidget(UUserWidget* Root, const FName WidgetName)
+{
+	return Root && Root->WidgetTree ? Cast<WidgetType>(Root->WidgetTree->FindWidget(WidgetName)) : nullptr;
+}
+
+void SetText(UUserWidget* Root, const FName WidgetName, const FText& Text)
+{
+	if (UTextBlock* TextBlock = FindNamedWidget<UTextBlock>(Root, WidgetName))
+	{
+		TextBlock->SetText(Text);
+	}
+}
+
+void BindButton(UUserWidget* Root, const FName WidgetName, UObject* Target, FName FunctionName)
+{
+	if (UButton* Button = FindNamedWidget<UButton>(Root, WidgetName))
+	{
+		Button->OnClicked.Clear();
+		FScriptDelegate Delegate;
+		Delegate.BindUFunction(Target, FunctionName);
+		Button->OnClicked.Add(Delegate);
+	}
+}
+
+void CollectDescendants(UWidget* Root, TArray<UWidget*>& OutWidgets)
+{
+	if (!Root)
+	{
+		return;
+	}
+
+	OutWidgets.Add(Root);
+
+	if (UPanelWidget* Panel = Cast<UPanelWidget>(Root))
+	{
+		for (int32 Index = 0; Index < Panel->GetChildrenCount(); ++Index)
+		{
+			CollectDescendants(Panel->GetChildAt(Index), OutWidgets);
+		}
+		return;
+	}
+
+	if (UContentWidget* Content = Cast<UContentWidget>(Root))
+	{
+		CollectDescendants(Content->GetContent(), OutWidgets);
+	}
+}
+
+template <typename WidgetType>
+WidgetType* FindFirstDescendantOfClass(UWidget* Root)
+{
+	TArray<UWidget*> Widgets;
+	CollectDescendants(Root, Widgets);
+	for (UWidget* Widget : Widgets)
+	{
+		if (WidgetType* TypedWidget = Cast<WidgetType>(Widget))
+		{
+			return TypedWidget;
+		}
+	}
+
+	return nullptr;
+}
+
+FText FormatTimer(float TimeLeft)
+{
+	const int32 TotalSeconds = FMath::Max(0, FMath::CeilToInt(TimeLeft));
+	return FText::Format(NSLOCTEXT("WordAttack", "TimerFormat", "{0}:{1}"),
+		FText::AsNumber(TotalSeconds / 60),
+		FText::AsNumber(TotalSeconds % 60));
+}
+}
+
+AWA_PlayerController::AWA_PlayerController()
+{
+	static ConstructorHelpers::FClassFinder<UUserWidget> MainMenuFinder(TEXT("/Game/UI/WBP_MainMenue"));
+	if (MainMenuFinder.Succeeded())
+	{
+		MainMenuClass = MainMenuFinder.Class;
+	}
+
+	static ConstructorHelpers::FClassFinder<UUserWidget> MainSettingsFinder(TEXT("/Game/UI/WBP_MainSettings"));
+	if (MainSettingsFinder.Succeeded())
+	{
+		MainSettingsClass = MainSettingsFinder.Class;
+	}
+
+	static ConstructorHelpers::FClassFinder<UUserWidget> MiniSettingsFinder(TEXT("/Game/UI/WBP_MiniSettings"));
+	if (MiniSettingsFinder.Succeeded())
+	{
+		MiniSettingsClass = MiniSettingsFinder.Class;
+	}
+
+	static ConstructorHelpers::FClassFinder<UUserWidget> NewScoreFinder(TEXT("/Game/UI/WBP_NewScore"));
+	if (NewScoreFinder.Succeeded())
+	{
+		NewScoreClass = NewScoreFinder.Class;
+	}
+
+	static ConstructorHelpers::FClassFinder<UUserWidget> PlayZoneFinder(TEXT("/Game/UI/WBP_PlayZone"));
+	if (PlayZoneFinder.Succeeded())
+	{
+		PlayZoneClass = PlayZoneFinder.Class;
+	}
+
+	static ConstructorHelpers::FClassFinder<UUserWidget> FailFinder(TEXT("/Game/UI/WBP_Fail"));
+	if (FailFinder.Succeeded())
+	{
+		FailClass = FailFinder.Class;
+	}
+}
 
 void AWA_PlayerController::BeginPlay()
 {
@@ -16,6 +136,7 @@ void AWA_PlayerController::BeginPlay()
 	SetInputMode(FInputModeUIOnly());
 
 	CreateWidgets();
+	BindWidgetEvents();
 	BindGameStateEvents();
 	RefreshWidgetsFromState();
 }
@@ -38,62 +159,236 @@ void AWA_PlayerController::HandleRestartRequested()
 
 void AWA_PlayerController::HandleRoundUpdated(const FWordRound& Round)
 {
-	if (GameHUD)
+	SetText(PlayZoneWidget, TEXT("Text_Letter_1"), Round.Letters.IsValidIndex(0) ? FText::FromString(FString::Chr(Round.Letters[0])) : FText::GetEmpty());
+	SetText(PlayZoneWidget, TEXT("Text_Letter_2"), Round.Letters.IsValidIndex(1) ? FText::FromString(FString::Chr(Round.Letters[1])) : FText::GetEmpty());
+	SetText(PlayZoneWidget, TEXT("Text_Letter_3"), Round.Letters.IsValidIndex(2) ? FText::FromString(FString::Chr(Round.Letters[2])) : FText::GetEmpty());
+
+	OptionWords = Round.Options;
+	for (int32 Index = 0; Index < OptionTexts.Num(); ++Index)
 	{
-		GameHUD->UpdateRound(Round);
+		const bool bHasOption = Round.Options.IsValidIndex(Index);
+		if (OptionTexts[Index])
+		{
+			OptionTexts[Index]->SetText(bHasOption ? FText::FromString(Round.Options[Index]) : FText::GetEmpty());
+		}
+		if (OptionButtons.IsValidIndex(Index) && OptionButtons[Index])
+		{
+			OptionButtons[Index]->SetVisibility(bHasOption ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+			OptionButtons[Index]->SetIsEnabled(bHasOption);
+		}
 	}
 }
 
 void AWA_PlayerController::HandleScoreChanged(int32 Score)
 {
-	if (GameHUD)
-	{
-		GameHUD->UpdateScore(Score);
-	}
+	SetText(PlayZoneWidget, TEXT("Text_ScoreCount"), FText::AsNumber(Score));
 }
 
 void AWA_PlayerController::HandleTimerUpdated(float TimeLeft)
 {
-	if (GameHUD)
+	SetText(PlayZoneWidget, TEXT("TextTimeCount"), FormatTimer(TimeLeft));
+
+	const AWA_GameState* WAGameState = GetWAGameState();
+	const float Percent = WAGameState ? FMath::Clamp(TimeLeft / WAGameState->RoundTimeLimit, 0.0f, 1.0f) : 0.0f;
+	if (UProgressBar* ProgressBar = FindNamedWidget<UProgressBar>(PlayZoneWidget, TEXT("ProgressBar_Combo")))
 	{
-		GameHUD->UpdateTimer(TimeLeft);
+		ProgressBar->SetPercent(Percent);
 	}
 }
 
-void AWA_PlayerController::HandleGameOver(const FString& Reason, int32 FinalScore, int32 BestScore)
+void AWA_PlayerController::HandleLivesChanged(int32 Lives)
 {
-	if (GameHUD)
+	for (int32 Index = 0; Index < LifeImages.Num(); ++Index)
 	{
-		GameHUD->DisableButtons();
+		if (LifeImages[Index])
+		{
+			LifeImages[Index]->SetVisibility(Index < Lives ? ESlateVisibility::Visible : ESlateVisibility::Hidden);
+		}
 	}
+}
 
-	if (GameOverWidget)
+void AWA_PlayerController::HandleComboChanged(int32 Combo, float Progress)
+{
+	SetText(PlayZoneWidget, TEXT("Text_Combo"), FText::Format(NSLOCTEXT("WordAttack", "ComboFormat", "COMBO x {0}"), Combo));
+}
+
+void AWA_PlayerController::HandleScreenChanged(EWA_GameScreen Screen, bool bIsPaused, bool bIsGameActive)
+{
+	switch (Screen)
 	{
-		GameOverWidget->ShowGameOver(FinalScore, BestScore, Reason);
+	case EWA_GameScreen::MainMenu:
+		ShowOnlyMainMenu();
+		break;
+	case EWA_GameScreen::Playing:
+		ShowPlaying();
+		break;
+	case EWA_GameScreen::Paused:
+		ShowPause();
+		break;
+	case EWA_GameScreen::GameOver:
+		SetWidgetVisibility(PlayZoneWidget, false);
+		break;
+	default:
+		break;
 	}
+}
+
+void AWA_PlayerController::HandleGameOver(const FString& Reason, int32 FinalScore, int32 BestScore, bool bNewBestScore)
+{
+	SetText(FailWidget, TEXT("Text_RoundScore_Numder"), FText::AsNumber(FinalScore));
+	const int32 NewScoreValue = bNewBestScore ? FinalScore : BestScore;
+	SetText(NewScoreWidget, TEXT("Text_NewScore_Number"), FText::AsNumber(NewScoreValue));
+	SetText(NewScoreWidget, TEXT("Text_NewScore_Numder"), FText::AsNumber(NewScoreValue));
+	UpdateBestScore(BestScore);
+	ShowGameOverWidgets(bNewBestScore);
+}
+
+void AWA_PlayerController::HandlePlayClicked()
+{
+	if (AWA_GameMode* WAGameMode = GetWAGameMode())
+	{
+		WAGameMode->StartGame();
+	}
+}
+
+void AWA_PlayerController::HandleMainSettingsClicked()
+{
+	ShowMainSettings();
+}
+
+void AWA_PlayerController::HandleMainSettingsBackClicked()
+{
+	ShowOnlyMainMenu();
+}
+
+void AWA_PlayerController::HandlePauseClicked()
+{
+	if (AWA_GameMode* WAGameMode = GetWAGameMode())
+	{
+		WAGameMode->PauseGame();
+	}
+}
+
+void AWA_PlayerController::HandleMiniSettingsBackClicked()
+{
+	if (AWA_GameMode* WAGameMode = GetWAGameMode())
+	{
+		WAGameMode->ResumeGame();
+	}
+}
+
+void AWA_PlayerController::HandleFailNewRoundClicked()
+{
+	HandleRestartRequested();
+}
+
+void AWA_PlayerController::HandleFailToMenuClicked()
+{
+	if (AWA_GameMode* WAGameMode = GetWAGameMode())
+	{
+		WAGameMode->ReturnToMainMenu();
+	}
+}
+
+void AWA_PlayerController::HandleNewScoreOkClicked()
+{
+	SetWidgetVisibility(NewScoreWidget, false);
+	if (bPendingFailAfterNewScore)
+	{
+		bPendingFailAfterNewScore = false;
+		ShowFailOnly();
+	}
+}
+
+void AWA_PlayerController::HandleOption1Clicked()
+{
+	UpdateOptionClicked(0);
+}
+
+void AWA_PlayerController::HandleOption2Clicked()
+{
+	UpdateOptionClicked(1);
+}
+
+void AWA_PlayerController::HandleOption3Clicked()
+{
+	UpdateOptionClicked(2);
+}
+
+void AWA_PlayerController::HandleOption4Clicked()
+{
+	UpdateOptionClicked(3);
+}
+
+void AWA_PlayerController::HandleOption5Clicked()
+{
+	UpdateOptionClicked(4);
 }
 
 void AWA_PlayerController::CreateWidgets()
 {
-	if (GameHUDClass)
+	if (MainMenuClass)
 	{
-		GameHUD = CreateWidget<UW_GameHUD>(this, GameHUDClass);
-		if (GameHUD)
-		{
-			GameHUD->AddToViewport(0);
-			GameHUD->OnWordSelected.RemoveAll(this);
-			GameHUD->OnWordSelected.AddDynamic(this, &AWA_PlayerController::HandleWordSelected);
-		}
+		MainMenuWidget = CreateWidget<UUserWidget>(this, MainMenuClass);
+		MainMenuWidget->AddToViewport(0);
+	}
+	if (PlayZoneClass)
+	{
+		PlayZoneWidget = CreateWidget<UUserWidget>(this, PlayZoneClass);
+		PlayZoneWidget->AddToViewport(1);
+	}
+	if (MainSettingsClass)
+	{
+		MainSettingsWidget = CreateWidget<UUserWidget>(this, MainSettingsClass);
+		MainSettingsWidget->AddToViewport(5);
+	}
+	if (MiniSettingsClass)
+	{
+		MiniSettingsWidget = CreateWidget<UUserWidget>(this, MiniSettingsClass);
+		MiniSettingsWidget->AddToViewport(6);
+	}
+	if (FailClass)
+	{
+		FailWidget = CreateWidget<UUserWidget>(this, FailClass);
+		FailWidget->AddToViewport(10);
+	}
+	if (NewScoreClass)
+	{
+		NewScoreWidget = CreateWidget<UUserWidget>(this, NewScoreClass);
+		NewScoreWidget->AddToViewport(11);
 	}
 
-	if (GameOverClass)
+	CachePlayZoneControls();
+	ShowOnlyMainMenu();
+}
+
+void AWA_PlayerController::BindWidgetEvents()
+{
+	BindButton(MainMenuWidget, TEXT("Button_Play"), this, GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandlePlayClicked));
+	BindButton(MainMenuWidget, TEXT("Button_Settings"), this, GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleMainSettingsClicked));
+	BindButton(MainSettingsWidget, TEXT("Button_Back"), this, GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleMainSettingsBackClicked));
+	BindButton(MiniSettingsWidget, TEXT("Button_Back"), this, GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleMiniSettingsBackClicked));
+	BindButton(PlayZoneWidget, TEXT("Button_Pause"), this, GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandlePauseClicked));
+	BindButton(FailWidget, TEXT("Button_NewRound"), this, GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleFailNewRoundClicked));
+	BindButton(FailWidget, TEXT("Button_ToMenue"), this, GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleFailToMenuClicked));
+	BindButton(NewScoreWidget, TEXT("Button_Ok"), this, GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleNewScoreOkClicked));
+
+	const FName Handlers[] = {
+		GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleOption1Clicked),
+		GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleOption2Clicked),
+		GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleOption3Clicked),
+		GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleOption4Clicked),
+		GET_FUNCTION_NAME_CHECKED(AWA_PlayerController, HandleOption5Clicked)
+	};
+
+	for (int32 Index = 0; Index < OptionButtons.Num() && Index < UE_ARRAY_COUNT(Handlers); ++Index)
 	{
-		GameOverWidget = CreateWidget<UW_GameOver>(this, GameOverClass);
-		if (GameOverWidget)
+		if (OptionButtons[Index])
 		{
-			GameOverWidget->AddToViewport(10);
-			GameOverWidget->OnRestartRequested.RemoveAll(this);
-			GameOverWidget->OnRestartRequested.AddDynamic(this, &AWA_PlayerController::HandleRestartRequested);
+			OptionButtons[Index]->OnClicked.Clear();
+			FScriptDelegate Delegate;
+			Delegate.BindUFunction(this, Handlers[Index]);
+			OptionButtons[Index]->OnClicked.Add(Delegate);
 		}
 	}
 }
@@ -112,6 +407,12 @@ void AWA_PlayerController::BindGameStateEvents()
 	WAGameState->OnScoreChanged.AddDynamic(this, &AWA_PlayerController::HandleScoreChanged);
 	WAGameState->OnTimerUpdated.RemoveAll(this);
 	WAGameState->OnTimerUpdated.AddDynamic(this, &AWA_PlayerController::HandleTimerUpdated);
+	WAGameState->OnLivesChanged.RemoveAll(this);
+	WAGameState->OnLivesChanged.AddDynamic(this, &AWA_PlayerController::HandleLivesChanged);
+	WAGameState->OnComboChanged.RemoveAll(this);
+	WAGameState->OnComboChanged.AddDynamic(this, &AWA_PlayerController::HandleComboChanged);
+	WAGameState->OnScreenChanged.RemoveAll(this);
+	WAGameState->OnScreenChanged.AddDynamic(this, &AWA_PlayerController::HandleScreenChanged);
 	WAGameState->OnGameOver.RemoveAll(this);
 	WAGameState->OnGameOver.AddDynamic(this, &AWA_PlayerController::HandleGameOver);
 }
@@ -124,13 +425,128 @@ void AWA_PlayerController::RefreshWidgetsFromState()
 		return;
 	}
 
-	if (GameHUD)
+	HandleScoreChanged(WAGameState->Score);
+	HandleTimerUpdated(WAGameState->TimeLeft);
+	HandleLivesChanged(WAGameState->Lives);
+	HandleComboChanged(WAGameState->Combo, WAGameState->ComboProgress);
+	UpdateBestScore(WAGameState->BestScore);
+	if (!WAGameState->CurrentRound.Options.IsEmpty())
 	{
-		GameHUD->UpdateScore(WAGameState->Score);
-		GameHUD->UpdateTimer(WAGameState->TimeLeft);
-		if (!WAGameState->CurrentRound.Options.IsEmpty())
+		HandleRoundUpdated(WAGameState->CurrentRound);
+	}
+	HandleScreenChanged(WAGameState->CurrentScreen, WAGameState->bIsPaused, WAGameState->bIsGameActive);
+}
+
+void AWA_PlayerController::ShowOnlyMainMenu()
+{
+	SetWidgetVisibility(MainMenuWidget, true);
+	SetWidgetVisibility(MainSettingsWidget, false);
+	SetWidgetVisibility(MiniSettingsWidget, false);
+	SetWidgetVisibility(PlayZoneWidget, false);
+	SetWidgetVisibility(FailWidget, false);
+	SetWidgetVisibility(NewScoreWidget, false);
+}
+
+void AWA_PlayerController::ShowMainSettings()
+{
+	SetWidgetVisibility(MainMenuWidget, false);
+	SetWidgetVisibility(MainSettingsWidget, true);
+	SetWidgetVisibility(MiniSettingsWidget, false);
+	SetWidgetVisibility(PlayZoneWidget, false);
+	SetWidgetVisibility(FailWidget, false);
+	SetWidgetVisibility(NewScoreWidget, false);
+}
+
+void AWA_PlayerController::ShowPlaying()
+{
+	SetWidgetVisibility(MainMenuWidget, false);
+	SetWidgetVisibility(MainSettingsWidget, false);
+	SetWidgetVisibility(MiniSettingsWidget, false);
+	SetWidgetVisibility(PlayZoneWidget, true);
+	SetWidgetVisibility(FailWidget, false);
+	SetWidgetVisibility(NewScoreWidget, false);
+}
+
+void AWA_PlayerController::ShowPause()
+{
+	SetWidgetVisibility(MainMenuWidget, false);
+	SetWidgetVisibility(MainSettingsWidget, false);
+	SetWidgetVisibility(PlayZoneWidget, true);
+	SetWidgetVisibility(MiniSettingsWidget, true);
+	SetWidgetVisibility(FailWidget, false);
+	SetWidgetVisibility(NewScoreWidget, false);
+}
+
+void AWA_PlayerController::ShowGameOverWidgets(bool bNewBestScore)
+{
+	bPendingFailAfterNewScore = bNewBestScore;
+	SetWidgetVisibility(MainMenuWidget, false);
+	SetWidgetVisibility(MainSettingsWidget, false);
+	SetWidgetVisibility(MiniSettingsWidget, false);
+	SetWidgetVisibility(PlayZoneWidget, false);
+	SetWidgetVisibility(FailWidget, !bNewBestScore);
+	SetWidgetVisibility(NewScoreWidget, bNewBestScore);
+}
+
+void AWA_PlayerController::ShowFailOnly()
+{
+	SetWidgetVisibility(MainMenuWidget, false);
+	SetWidgetVisibility(MainSettingsWidget, false);
+	SetWidgetVisibility(MiniSettingsWidget, false);
+	SetWidgetVisibility(PlayZoneWidget, false);
+	SetWidgetVisibility(NewScoreWidget, false);
+	SetWidgetVisibility(FailWidget, true);
+}
+
+void AWA_PlayerController::SetWidgetVisibility(UUserWidget* Widget, bool bVisible) const
+{
+	if (Widget)
+	{
+		Widget->SetVisibility(bVisible ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+}
+
+void AWA_PlayerController::UpdateBestScore(int32 BestScore)
+{
+	SetText(PlayZoneWidget, TEXT("Text_ScoreCount_1"), FText::AsNumber(BestScore));
+}
+
+void AWA_PlayerController::UpdateOptionClicked(int32 OptionIndex)
+{
+	if (OptionWords.IsValidIndex(OptionIndex))
+	{
+		HandleWordSelected(OptionWords[OptionIndex]);
+	}
+}
+
+void AWA_PlayerController::CachePlayZoneControls()
+{
+	OptionButtons.Reset();
+	OptionTexts.Reset();
+	LifeImages.Reset();
+
+	UWidget* WordsRoot = FindNamedWidget<UWidget>(PlayZoneWidget, TEXT("HorizontalBox_Words"));
+	if (UPanelWidget* WordsPanel = Cast<UPanelWidget>(WordsRoot))
+	{
+		for (int32 Index = 0; Index < WordsPanel->GetChildrenCount(); ++Index)
 		{
-			GameHUD->UpdateRound(WAGameState->CurrentRound);
+			UWidget* SlotRoot = WordsPanel->GetChildAt(Index);
+			OptionButtons.Add(FindFirstDescendantOfClass<UButton>(SlotRoot));
+			OptionTexts.Add(FindFirstDescendantOfClass<UTextBlock>(SlotRoot));
+		}
+	}
+
+	TArray<UWidget*> AllPlayWidgets;
+	CollectDescendants(PlayZoneWidget, AllPlayWidgets);
+	for (UWidget* Widget : AllPlayWidgets)
+	{
+		if (UImage* Image = Cast<UImage>(Widget))
+		{
+			LifeImages.Add(Image);
+			if (LifeImages.Num() == 3)
+			{
+				break;
+			}
 		}
 	}
 }

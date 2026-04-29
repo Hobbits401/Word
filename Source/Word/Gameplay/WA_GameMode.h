@@ -35,6 +35,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Word Attack|Game")
 	void RestartGame();
 
+	UFUNCTION(BlueprintCallable, Category = "Word Attack|Game")
+	void PauseGame();
+
+	UFUNCTION(BlueprintCallable, Category = "Word Attack|Game")
+	void ResumeGame();
+
+	UFUNCTION(BlueprintCallable, Category = "Word Attack|Game")
+	void ReturnToMainMenu();
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -52,10 +61,16 @@ private:
 	TObjectPtr<UWA_SaveGame> CurrentSaveGame;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|Rules")
-	float StartTime = 3.0f;
+	float StartTime = 20.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|Rules")
 	int32 ScorePerCorrect = 1;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|Rules")
+	int32 MaxLives = 3;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|Rules")
+	int32 ComboProgressTarget = 10;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|Save")
 	FString SaveSlotName = TEXT("WordAttackSave");
@@ -72,4 +87,7 @@ private:
 	AWA_GameState* GetWAGameState() const;
 	void LoadBestScore();
 	void SaveBestScore();
+	void LoseLife(const FString& Reason);
+	void ResetRoundTimer();
+	float CalculateComboProgress(int32 Combo) const;
 };

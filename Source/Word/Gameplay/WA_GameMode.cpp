@@ -29,7 +29,18 @@ void AWA_GameMode::BeginPlay()
 	TimerComponent->OnTimerUpdated.AddDynamic(this, &AWA_GameMode::HandleTimerUpdated);
 	TimerComponent->OnTimerExpired.AddDynamic(this, &AWA_GameMode::HandleTimerExpired);
 
-	StartGame();
+	LoadBestScore();
+	if (AWA_GameState* WAGameState = GetWAGameState())
+	{
+		WAGameState->SetBestScore(CurrentSaveGame ? CurrentSaveGame->BestScore : 0);
+		WAGameState->SetScore(0);
+		WAGameState->SetLives(MaxLives);
+		WAGameState->SetCombo(0, 0.0f);
+		WAGameState->SetRoundTimeLimit(StartTime);
+		WAGameState->SetGameActive(false);
+		WAGameState->SetPaused(false);
+		WAGameState->SetScreen(EWA_GameScreen::MainMenu);
+	}
 }
 
 void AWA_GameMode::StartGame()
@@ -48,8 +59,12 @@ void AWA_GameMode::StartGame()
 
 	WAGameState->SetBestScore(CurrentSaveGame ? CurrentSaveGame->BestScore : 0);
 	WAGameState->SetScore(0);
+	WAGameState->SetLives(MaxLives);
+	WAGameState->SetCombo(0, 0.0f);
+	WAGameState->SetRoundTimeLimit(StartTime);
+	WAGameState->SetPaused(false);
 	WAGameState->SetGameActive(true);
-	TimerComponent->StartTimer(StartTime);
+	WAGameState->SetScreen(EWA_GameScreen::Playing);
 
 	StartRound();
 }
@@ -57,7 +72,7 @@ void AWA_GameMode::StartGame()
 void AWA_GameMode::StartRound()
 {
 	AWA_GameState* WAGameState = GetWAGameState();
-	if (!WAGameState || !WAGameState->bIsGameActive || !WordManager)
+	if (!WAGameState || !WAGameState->bIsGameActive || WAGameState->bIsPaused || !WordManager)
 	{
 		return;
 	}
@@ -66,17 +81,18 @@ void AWA_GameMode::StartRound()
 	if (WordManager->GenerateRound(NewRound))
 	{
 		WAGameState->SetRound(NewRound);
+		ResetRoundTimer();
 	}
 	else
 	{
-		EndGame(TEXT("Не удалось создать раунд"));
+		EndGame(TEXT("Round generation failed"));
 	}
 }
 
 void AWA_GameMode::HandleAnswer(const FString& SelectedWord)
 {
 	AWA_GameState* WAGameState = GetWAGameState();
-	if (!WAGameState || !WAGameState->bIsGameActive || !DifficultySystem)
+	if (!WAGameState || !WAGameState->bIsGameActive || WAGameState->bIsPaused || !DifficultySystem)
 	{
 		return;
 	}
@@ -84,15 +100,16 @@ void AWA_GameMode::HandleAnswer(const FString& SelectedWord)
 	if (SelectedWord == WAGameState->CurrentRound.CorrectWord)
 	{
 		const int32 NewScore = WAGameState->Score + ScorePerCorrect;
+		const int32 NewCombo = WAGameState->Combo + 1;
 		WAGameState->SetScore(NewScore);
+		WAGameState->SetCombo(NewCombo, CalculateComboProgress(NewCombo));
 		DifficultySystem->UpdateDifficultyByScore(NewScore);
 		TimerComponent->SetDrainMultiplier(DifficultySystem->GetTimerDrainMultiplier());
-		TimerComponent->AddTime(DifficultySystem->GetCorrectAnswerBonusTime());
 		StartRound();
 		return;
 	}
 
-	EndGame(TEXT("Неверный ответ"));
+	LoseLife(TEXT("Wrong answer"));
 }
 
 void AWA_GameMode::EndGame(const FString& Reason)
@@ -105,20 +122,62 @@ void AWA_GameMode::EndGame(const FString& Reason)
 
 	TimerComponent->StopTimer();
 	WAGameState->SetGameActive(false);
+	WAGameState->SetPaused(false);
+	WAGameState->SetScreen(EWA_GameScreen::GameOver);
 
+	bool bNewBestScore = false;
 	if (CurrentSaveGame && WAGameState->Score > CurrentSaveGame->BestScore)
 	{
 		CurrentSaveGame->BestScore = WAGameState->Score;
 		WAGameState->SetBestScore(CurrentSaveGame->BestScore);
 		SaveBestScore();
+		bNewBestScore = true;
 	}
 
-	WAGameState->BroadcastGameOver(Reason);
+	WAGameState->BroadcastGameOver(Reason, bNewBestScore);
 }
 
 void AWA_GameMode::RestartGame()
 {
 	StartGame();
+}
+
+void AWA_GameMode::PauseGame()
+{
+	AWA_GameState* WAGameState = GetWAGameState();
+	if (!WAGameState || !WAGameState->bIsGameActive || WAGameState->bIsPaused)
+	{
+		return;
+	}
+
+	TimerComponent->StopTimer();
+	WAGameState->SetPaused(true);
+	WAGameState->SetScreen(EWA_GameScreen::Paused);
+}
+
+void AWA_GameMode::ResumeGame()
+{
+	AWA_GameState* WAGameState = GetWAGameState();
+	if (!WAGameState || !WAGameState->bIsGameActive || !WAGameState->bIsPaused)
+	{
+		return;
+	}
+
+	WAGameState->SetPaused(false);
+	WAGameState->SetScreen(EWA_GameScreen::Playing);
+	TimerComponent->ResumeTimer();
+}
+
+void AWA_GameMode::ReturnToMainMenu()
+{
+	TimerComponent->StopTimer();
+
+	if (AWA_GameState* WAGameState = GetWAGameState())
+	{
+		WAGameState->SetGameActive(false);
+		WAGameState->SetPaused(false);
+		WAGameState->SetScreen(EWA_GameScreen::MainMenu);
+	}
 }
 
 void AWA_GameMode::HandleTimerUpdated(float TimeLeft)
@@ -131,7 +190,7 @@ void AWA_GameMode::HandleTimerUpdated(float TimeLeft)
 
 void AWA_GameMode::HandleTimerExpired()
 {
-	EndGame(TEXT("Время вышло"));
+	LoseLife(TEXT("Time is over"));
 }
 
 AWA_GameState* AWA_GameMode::GetWAGameState() const
@@ -158,4 +217,44 @@ void AWA_GameMode::SaveBestScore()
 	{
 		UGameplayStatics::SaveGameToSlot(CurrentSaveGame, SaveSlotName, SaveUserIndex);
 	}
+}
+
+void AWA_GameMode::LoseLife(const FString& Reason)
+{
+	AWA_GameState* WAGameState = GetWAGameState();
+	if (!WAGameState || !WAGameState->bIsGameActive)
+	{
+		return;
+	}
+
+	const int32 NewLives = WAGameState->Lives - 1;
+	WAGameState->SetLives(NewLives);
+	WAGameState->SetCombo(0, 0.0f);
+
+	if (NewLives <= 0)
+	{
+		EndGame(Reason);
+		return;
+	}
+
+	StartRound();
+}
+
+void AWA_GameMode::ResetRoundTimer()
+{
+	if (AWA_GameState* WAGameState = GetWAGameState())
+	{
+		WAGameState->SetRoundTimeLimit(StartTime);
+	}
+	TimerComponent->StartTimer(StartTime);
+}
+
+float AWA_GameMode::CalculateComboProgress(int32 Combo) const
+{
+	if (ComboProgressTarget <= 0)
+	{
+		return 0.0f;
+	}
+
+	return static_cast<float>(Combo % ComboProgressTarget) / static_cast<float>(ComboProgressTarget);
 }

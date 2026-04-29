@@ -24,6 +24,7 @@ public:
 	FWATimerExpiredSignature OnTimerExpired;
 
 	void StartTimer(float InitialTime);
+	void ResumeTimer();
 	void StopTimer();
 	void AddTime(float TimeToAdd);
 	void SetDrainMultiplier(float NewDrainMultiplier);

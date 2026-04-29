@@ -5,12 +5,15 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "Core/WordTypes.h"
+#include "Gameplay/WA_GameState.h"
 #include "WA_PlayerController.generated.h"
 
 class AWA_GameMode;
-class AWA_GameState;
-class UW_GameHUD;
-class UW_GameOver;
+class UButton;
+class UImage;
+class UProgressBar;
+class UTextBlock;
+class UUserWidget;
 
 UCLASS()
 class WORD_API AWA_PlayerController : public APlayerController
@@ -18,6 +21,8 @@ class WORD_API AWA_PlayerController : public APlayerController
 	GENERATED_BODY()
 
 public:
+	AWA_PlayerController();
+
 	virtual void BeginPlay() override;
 
 	UFUNCTION(BlueprintCallable, Category = "Word Attack|UI")
@@ -28,17 +33,55 @@ public:
 
 protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|UI")
-	TSubclassOf<UW_GameHUD> GameHUDClass;
+	TSubclassOf<UUserWidget> MainMenuClass;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|UI")
-	TSubclassOf<UW_GameOver> GameOverClass;
+	TSubclassOf<UUserWidget> MainSettingsClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|UI")
+	TSubclassOf<UUserWidget> MiniSettingsClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|UI")
+	TSubclassOf<UUserWidget> NewScoreClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|UI")
+	TSubclassOf<UUserWidget> PlayZoneClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|UI")
+	TSubclassOf<UUserWidget> FailClass;
 
 private:
 	UPROPERTY()
-	TObjectPtr<UW_GameHUD> GameHUD;
+	TObjectPtr<UUserWidget> MainMenuWidget;
 
 	UPROPERTY()
-	TObjectPtr<UW_GameOver> GameOverWidget;
+	TObjectPtr<UUserWidget> MainSettingsWidget;
+
+	UPROPERTY()
+	TObjectPtr<UUserWidget> MiniSettingsWidget;
+
+	UPROPERTY()
+	TObjectPtr<UUserWidget> NewScoreWidget;
+
+	UPROPERTY()
+	TObjectPtr<UUserWidget> PlayZoneWidget;
+
+	UPROPERTY()
+	TObjectPtr<UUserWidget> FailWidget;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UButton>> OptionButtons;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UTextBlock>> OptionTexts;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UImage>> LifeImages;
+
+	UPROPERTY()
+	TArray<FString> OptionWords;
+
+	bool bPendingFailAfterNewScore = false;
 
 	UFUNCTION()
 	void HandleRoundUpdated(const FWordRound& Round);
@@ -50,11 +93,70 @@ private:
 	void HandleTimerUpdated(float TimeLeft);
 
 	UFUNCTION()
-	void HandleGameOver(const FString& Reason, int32 FinalScore, int32 BestScore);
+	void HandleLivesChanged(int32 Lives);
+
+	UFUNCTION()
+	void HandleComboChanged(int32 Combo, float Progress);
+
+	UFUNCTION()
+	void HandleScreenChanged(EWA_GameScreen Screen, bool bIsPaused, bool bIsGameActive);
+
+	UFUNCTION()
+	void HandleGameOver(const FString& Reason, int32 FinalScore, int32 BestScore, bool bNewBestScore);
+
+	UFUNCTION()
+	void HandlePlayClicked();
+
+	UFUNCTION()
+	void HandleMainSettingsClicked();
+
+	UFUNCTION()
+	void HandleMainSettingsBackClicked();
+
+	UFUNCTION()
+	void HandlePauseClicked();
+
+	UFUNCTION()
+	void HandleMiniSettingsBackClicked();
+
+	UFUNCTION()
+	void HandleFailNewRoundClicked();
+
+	UFUNCTION()
+	void HandleFailToMenuClicked();
+
+	UFUNCTION()
+	void HandleNewScoreOkClicked();
+
+	UFUNCTION()
+	void HandleOption1Clicked();
+
+	UFUNCTION()
+	void HandleOption2Clicked();
+
+	UFUNCTION()
+	void HandleOption3Clicked();
+
+	UFUNCTION()
+	void HandleOption4Clicked();
+
+	UFUNCTION()
+	void HandleOption5Clicked();
 
 	void CreateWidgets();
+	void BindWidgetEvents();
 	void BindGameStateEvents();
 	void RefreshWidgetsFromState();
+	void ShowOnlyMainMenu();
+	void ShowMainSettings();
+	void ShowPlaying();
+	void ShowPause();
+	void ShowGameOverWidgets(bool bNewBestScore);
+	void ShowFailOnly();
+	void SetWidgetVisibility(UUserWidget* Widget, bool bVisible) const;
+	void UpdateBestScore(int32 BestScore);
+	void UpdateOptionClicked(int32 OptionIndex);
+	void CachePlayZoneControls();
 	AWA_GameMode* GetWAGameMode() const;
 	AWA_GameState* GetWAGameState() const;
 };

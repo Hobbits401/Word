@@ -23,6 +23,19 @@ void AWA_GameState::SetTimeLeft(float NewTimeLeft)
 void AWA_GameState::SetGameActive(bool bNewIsGameActive)
 {
 	bIsGameActive = bNewIsGameActive;
+	OnScreenChanged.Broadcast(CurrentScreen, bIsPaused, bIsGameActive);
+}
+
+void AWA_GameState::SetPaused(bool bNewIsPaused)
+{
+	bIsPaused = bNewIsPaused;
+	OnScreenChanged.Broadcast(CurrentScreen, bIsPaused, bIsGameActive);
+}
+
+void AWA_GameState::SetScreen(EWA_GameScreen NewScreen)
+{
+	CurrentScreen = NewScreen;
+	OnScreenChanged.Broadcast(CurrentScreen, bIsPaused, bIsGameActive);
 }
 
 void AWA_GameState::SetBestScore(int32 NewBestScore)
@@ -30,8 +43,26 @@ void AWA_GameState::SetBestScore(int32 NewBestScore)
 	BestScore = NewBestScore;
 }
 
-void AWA_GameState::BroadcastGameOver(const FString& Reason)
+void AWA_GameState::SetLives(int32 NewLives)
+{
+	Lives = FMath::Max(0, NewLives);
+	OnLivesChanged.Broadcast(Lives);
+}
+
+void AWA_GameState::SetCombo(int32 NewCombo, float NewProgress)
+{
+	Combo = FMath::Max(0, NewCombo);
+	ComboProgress = FMath::Clamp(NewProgress, 0.0f, 1.0f);
+	OnComboChanged.Broadcast(Combo, ComboProgress);
+}
+
+void AWA_GameState::SetRoundTimeLimit(float NewRoundTimeLimit)
+{
+	RoundTimeLimit = FMath::Max(0.1f, NewRoundTimeLimit);
+}
+
+void AWA_GameState::BroadcastGameOver(const FString& Reason, bool bNewBestScore)
 {
 	GameOverReason = Reason;
-	OnGameOver.Broadcast(GameOverReason, Score, BestScore);
+	OnGameOver.Broadcast(GameOverReason, Score, BestScore, bNewBestScore);
 }

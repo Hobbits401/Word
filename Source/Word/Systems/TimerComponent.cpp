@@ -14,6 +14,12 @@ void UTimerComponent::StartTimer(float InitialTime)
 	OnTimerUpdated.Broadcast(TimeLeft);
 }
 
+void UTimerComponent::ResumeTimer()
+{
+	bIsRunning = TimeLeft > 0.0f;
+	OnTimerUpdated.Broadcast(TimeLeft);
+}
+
 void UTimerComponent::StopTimer()
 {
 	bIsRunning = false;
