@@ -4,14 +4,16 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
+#include "Animation/WidgetAnimation.h"
 #include "Components/Button.h"
 #include "Components/ContentWidget.h"
-#include "Components/Image.h"
 #include "Components/PanelWidget.h"
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
 #include "Gameplay/WA_GameMode.h"
+#include "MovieScene.h"
 #include "UObject/ConstructorHelpers.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -159,6 +161,9 @@ void AWA_PlayerController::HandleRestartRequested()
 
 void AWA_PlayerController::HandleRoundUpdated(const FWordRound& Round)
 {
+	PlayTimerNewTimeAnimation();
+	StartTimerWaitingAnimation();
+
 	SetText(PlayZoneWidget, TEXT("Text_Letter_1"), Round.Letters.IsValidIndex(0) ? FText::FromString(FString::Chr(Round.Letters[0])) : FText::GetEmpty());
 	SetText(PlayZoneWidget, TEXT("Text_Letter_2"), Round.Letters.IsValidIndex(1) ? FText::FromString(FString::Chr(Round.Letters[1])) : FText::GetEmpty());
 	SetText(PlayZoneWidget, TEXT("Text_Letter_3"), Round.Letters.IsValidIndex(2) ? FText::FromString(FString::Chr(Round.Letters[2])) : FText::GetEmpty());
@@ -190,26 +195,19 @@ void AWA_PlayerController::HandleTimerUpdated(float TimeLeft)
 
 	const AWA_GameState* WAGameState = GetWAGameState();
 	const float Percent = WAGameState ? FMath::Clamp(TimeLeft / WAGameState->RoundTimeLimit, 0.0f, 1.0f) : 0.0f;
-	if (UProgressBar* ProgressBar = FindNamedWidget<UProgressBar>(PlayZoneWidget, TEXT("ProgressBar_Combo")))
+	if (UProgressBar* ProgressBar = FindNamedWidget<UProgressBar>(PlayZoneWidget, TEXT("ProgressBar_Timer")))
 	{
 		ProgressBar->SetPercent(Percent);
-	}
-}
-
-void AWA_PlayerController::HandleLivesChanged(int32 Lives)
-{
-	for (int32 Index = 0; Index < LifeImages.Num(); ++Index)
-	{
-		if (LifeImages[Index])
-		{
-			LifeImages[Index]->SetVisibility(Index < Lives ? ESlateVisibility::Visible : ESlateVisibility::Hidden);
-		}
 	}
 }
 
 void AWA_PlayerController::HandleComboChanged(int32 Combo, float Progress)
 {
 	SetText(PlayZoneWidget, TEXT("Text_Combo"), FText::Format(NSLOCTEXT("WordAttack", "ComboFormat", "COMBO x {0}"), Combo));
+	if (UProgressBar* ProgressBar = FindNamedWidget<UProgressBar>(PlayZoneWidget, TEXT("ProgressBar_Combo")))
+	{
+		ProgressBar->SetPercent(Progress);
+	}
 }
 
 void AWA_PlayerController::HandleScreenChanged(EWA_GameScreen Screen, bool bIsPaused, bool bIsGameActive)
@@ -217,15 +215,19 @@ void AWA_PlayerController::HandleScreenChanged(EWA_GameScreen Screen, bool bIsPa
 	switch (Screen)
 	{
 	case EWA_GameScreen::MainMenu:
+		StopTimerWaitingAnimation();
 		ShowOnlyMainMenu();
 		break;
 	case EWA_GameScreen::Playing:
 		ShowPlaying();
+		StartTimerWaitingAnimation();
 		break;
 	case EWA_GameScreen::Paused:
+		StopTimerWaitingAnimation();
 		ShowPause();
 		break;
 	case EWA_GameScreen::GameOver:
+		StopTimerWaitingAnimation();
 		SetWidgetVisibility(PlayZoneWidget, false);
 		break;
 	default:
@@ -407,8 +409,6 @@ void AWA_PlayerController::BindGameStateEvents()
 	WAGameState->OnScoreChanged.AddDynamic(this, &AWA_PlayerController::HandleScoreChanged);
 	WAGameState->OnTimerUpdated.RemoveAll(this);
 	WAGameState->OnTimerUpdated.AddDynamic(this, &AWA_PlayerController::HandleTimerUpdated);
-	WAGameState->OnLivesChanged.RemoveAll(this);
-	WAGameState->OnLivesChanged.AddDynamic(this, &AWA_PlayerController::HandleLivesChanged);
 	WAGameState->OnComboChanged.RemoveAll(this);
 	WAGameState->OnComboChanged.AddDynamic(this, &AWA_PlayerController::HandleComboChanged);
 	WAGameState->OnScreenChanged.RemoveAll(this);
@@ -427,7 +427,6 @@ void AWA_PlayerController::RefreshWidgetsFromState()
 
 	HandleScoreChanged(WAGameState->Score);
 	HandleTimerUpdated(WAGameState->TimeLeft);
-	HandleLivesChanged(WAGameState->Lives);
 	HandleComboChanged(WAGameState->Combo, WAGameState->ComboProgress);
 	UpdateBestScore(WAGameState->BestScore);
 	if (!WAGameState->CurrentRound.Options.IsEmpty())
@@ -479,6 +478,7 @@ void AWA_PlayerController::ShowPause()
 
 void AWA_PlayerController::ShowGameOverWidgets(bool bNewBestScore)
 {
+	StopTimerWaitingAnimation();
 	bPendingFailAfterNewScore = bNewBestScore;
 	SetWidgetVisibility(MainMenuWidget, false);
 	SetWidgetVisibility(MainSettingsWidget, false);
@@ -490,6 +490,7 @@ void AWA_PlayerController::ShowGameOverWidgets(bool bNewBestScore)
 
 void AWA_PlayerController::ShowFailOnly()
 {
+	StopTimerWaitingAnimation();
 	SetWidgetVisibility(MainMenuWidget, false);
 	SetWidgetVisibility(MainSettingsWidget, false);
 	SetWidgetVisibility(MiniSettingsWidget, false);
@@ -523,7 +524,6 @@ void AWA_PlayerController::CachePlayZoneControls()
 {
 	OptionButtons.Reset();
 	OptionTexts.Reset();
-	LifeImages.Reset();
 
 	UWidget* WordsRoot = FindNamedWidget<UWidget>(PlayZoneWidget, TEXT("HorizontalBox_Words"));
 	if (UPanelWidget* WordsPanel = Cast<UPanelWidget>(WordsRoot))
@@ -535,20 +535,89 @@ void AWA_PlayerController::CachePlayZoneControls()
 			OptionTexts.Add(FindFirstDescendantOfClass<UTextBlock>(SlotRoot));
 		}
 	}
+}
 
-	TArray<UWidget*> AllPlayWidgets;
-	CollectDescendants(PlayZoneWidget, AllPlayWidgets);
-	for (UWidget* Widget : AllPlayWidgets)
+void AWA_PlayerController::PlayWidgetAnimationByName(UUserWidget* Widget, FName AnimationName, bool bLoop)
+{
+	if (!Widget)
 	{
-		if (UImage* Image = Cast<UImage>(Widget))
+		return;
+	}
+
+	if (UWidgetAnimation* Animation = FindWidgetAnimationByName(Widget, AnimationName))
+	{
+		if (bLoop && Widget->IsAnimationPlaying(Animation))
 		{
-			LifeImages.Add(Image);
-			if (LifeImages.Num() == 3)
-			{
-				break;
-			}
+			return;
+		}
+
+		Widget->PlayAnimation(Animation, 0.0f, bLoop ? 0 : 1, EUMGSequencePlayMode::Forward, 1.0f);
+	}
+}
+
+void AWA_PlayerController::StopWidgetAnimationByName(UUserWidget* Widget, FName AnimationName)
+{
+	if (!Widget)
+	{
+		return;
+	}
+
+	if (UWidgetAnimation* Animation = FindWidgetAnimationByName(Widget, AnimationName))
+	{
+		if (Widget->IsAnimationPlaying(Animation))
+		{
+			Widget->StopAnimation(Animation);
 		}
 	}
+}
+
+UWidgetAnimation* AWA_PlayerController::FindWidgetAnimationByName(UUserWidget* Widget, FName AnimationName) const
+{
+	if (!Widget)
+	{
+		return nullptr;
+	}
+
+	const FString DesiredName = AnimationName.ToString();
+	for (TFieldIterator<FObjectProperty> PropertyIt(Widget->GetClass()); PropertyIt; ++PropertyIt)
+	{
+		FObjectProperty* ObjectProperty = *PropertyIt;
+		if (!ObjectProperty || !ObjectProperty->PropertyClass->IsChildOf(UWidgetAnimation::StaticClass()))
+		{
+			continue;
+		}
+
+		UWidgetAnimation* Animation = Cast<UWidgetAnimation>(ObjectProperty->GetObjectPropertyValue_InContainer(Widget));
+		if (!Animation)
+		{
+			continue;
+		}
+
+		const bool bPropertyMatches = ObjectProperty->GetName().Contains(DesiredName);
+		const bool bAnimationMatches = Animation->GetName().Contains(DesiredName);
+		const bool bMovieSceneMatches = Animation->GetMovieScene() && Animation->GetMovieScene()->GetName().Contains(DesiredName);
+		if (bPropertyMatches || bAnimationMatches || bMovieSceneMatches)
+		{
+			return Animation;
+		}
+	}
+
+	return nullptr;
+}
+
+void AWA_PlayerController::StartTimerWaitingAnimation()
+{
+	PlayWidgetAnimationByName(PlayZoneWidget, TEXT("Timer_Anim_Waiting"), true);
+}
+
+void AWA_PlayerController::StopTimerWaitingAnimation()
+{
+	StopWidgetAnimationByName(PlayZoneWidget, TEXT("Timer_Anim_Waiting"));
+}
+
+void AWA_PlayerController::PlayTimerNewTimeAnimation()
+{
+	PlayWidgetAnimationByName(PlayZoneWidget, TEXT("Timer_Anim_NewTime"), false);
 }
 
 AWA_GameMode* AWA_PlayerController::GetWAGameMode() const

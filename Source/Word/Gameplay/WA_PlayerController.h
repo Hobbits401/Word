@@ -10,10 +10,10 @@
 
 class AWA_GameMode;
 class UButton;
-class UImage;
 class UProgressBar;
 class UTextBlock;
 class UUserWidget;
+class UWidgetAnimation;
 
 UCLASS()
 class WORD_API AWA_PlayerController : public APlayerController
@@ -76,9 +76,6 @@ private:
 	TArray<TObjectPtr<UTextBlock>> OptionTexts;
 
 	UPROPERTY()
-	TArray<TObjectPtr<UImage>> LifeImages;
-
-	UPROPERTY()
 	TArray<FString> OptionWords;
 
 	bool bPendingFailAfterNewScore = false;
@@ -91,9 +88,6 @@ private:
 
 	UFUNCTION()
 	void HandleTimerUpdated(float TimeLeft);
-
-	UFUNCTION()
-	void HandleLivesChanged(int32 Lives);
 
 	UFUNCTION()
 	void HandleComboChanged(int32 Combo, float Progress);
@@ -157,6 +151,12 @@ private:
 	void UpdateBestScore(int32 BestScore);
 	void UpdateOptionClicked(int32 OptionIndex);
 	void CachePlayZoneControls();
+	void PlayWidgetAnimationByName(UUserWidget* Widget, FName AnimationName, bool bLoop);
+	void StopWidgetAnimationByName(UUserWidget* Widget, FName AnimationName);
+	UWidgetAnimation* FindWidgetAnimationByName(UUserWidget* Widget, FName AnimationName) const;
+	void StartTimerWaitingAnimation();
+	void StopTimerWaitingAnimation();
+	void PlayTimerNewTimeAnimation();
 	AWA_GameMode* GetWAGameMode() const;
 	AWA_GameState* GetWAGameState() const;
 };
