@@ -11,6 +11,7 @@
 class AWA_GameMode;
 class UButton;
 class UImage;
+class UMaterialInterface;
 class UPaperSprite;
 class UProgressBar;
 class UTextBlock;
@@ -56,7 +57,7 @@ protected:
 	TObjectPtr<UPaperSprite> HeartAliveSprite;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|UI")
-	TObjectPtr<UPaperSprite> HeartLostSprite;
+	TObjectPtr<UMaterialInterface> HeartLossPendingMaterial;
 
 private:
 	UPROPERTY()
@@ -90,6 +91,7 @@ private:
 	TArray<FString> OptionWords;
 
 	bool bPendingFailAfterNewScore = false;
+	int32 LastDisplayedLives = 3;
 
 	UFUNCTION()
 	void HandleRoundUpdated(const FWordRound& Round);
@@ -165,8 +167,11 @@ private:
 	void UpdateBestScore(int32 BestScore);
 	void UpdateOptionClicked(int32 OptionIndex);
 	void CachePlayZoneControls();
+	void CacheHeartImages();
 	void UpdateHeartSprites(int32 Lives);
 	void SetHeartSprite(UImage* Image, UPaperSprite* Sprite) const;
+	void SetHeartPendingMaterial(UImage* Image) const;
+	int32 GetLostHeartCount(int32 Lives) const;
 	void PlayWidgetAnimationByName(UUserWidget* Widget, FName AnimationName, bool bLoop);
 	void StopWidgetAnimationByName(UUserWidget* Widget, FName AnimationName);
 	UWidgetAnimation* FindWidgetAnimationByName(UUserWidget* Widget, FName AnimationName) const;

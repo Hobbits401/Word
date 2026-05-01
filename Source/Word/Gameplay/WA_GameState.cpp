@@ -2,6 +2,8 @@
 
 #include "Gameplay/WA_GameState.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogWAGameState, Log, All);
+
 void AWA_GameState::SetRound(const FWordRound& NewRound)
 {
 	CurrentRound = NewRound;
@@ -46,6 +48,7 @@ void AWA_GameState::SetBestScore(int32 NewBestScore)
 void AWA_GameState::SetLives(int32 NewLives)
 {
 	Lives = FMath::Max(0, NewLives);
+	UE_LOG(LogWAGameState, Log, TEXT("SetLives: NewLives=%d StoredLives=%d"), NewLives, Lives);
 	OnLivesChanged.Broadcast(Lives);
 }
 
