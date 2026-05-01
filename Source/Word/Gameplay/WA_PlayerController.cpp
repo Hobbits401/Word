@@ -7,13 +7,19 @@
 #include "Animation/WidgetAnimation.h"
 #include "Components/Button.h"
 #include "Components/ContentWidget.h"
+#include "Components/Image.h"
+#include "Materials/MaterialInterface.h"
 #include "Components/PanelWidget.h"
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
 #include "Gameplay/WA_GameMode.h"
 #include "MovieScene.h"
+#include "PaperSprite.h"
+#include "Slate/SlateTextureAtlasInterface.h"
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/UnrealType.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogWAPlayerController, Log, All);
 
 namespace
 {
@@ -128,6 +134,20 @@ AWA_PlayerController::AWA_PlayerController()
 	{
 		FailClass = FailFinder.Class;
 	}
+
+	static ConstructorHelpers::FObjectFinder<UPaperSprite> HeartAliveSpriteFinder(TEXT("/Game/UI/UI_Elements/Heart/Heart_FLipTexture_Sprite_0.Heart_FLipTexture_Sprite_0"));
+	if (HeartAliveSpriteFinder.Succeeded())
+	{
+		HeartAliveSprite = HeartAliveSpriteFinder.Object;
+	}
+	UE_LOG(LogWAPlayerController, Log, TEXT("HeartAliveSprite load: %s"), HeartAliveSprite ? *HeartAliveSprite->GetPathName() : TEXT("FAILED"));
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HeartLossPendingMaterialFinder(TEXT("/Game/UI/UI_Elements/Heart/All_Heart_Mat.All_Heart_Mat"));
+	if (HeartLossPendingMaterialFinder.Succeeded())
+	{
+		HeartLossPendingMaterial = HeartLossPendingMaterialFinder.Object;
+	}
+	UE_LOG(LogWAPlayerController, Log, TEXT("HeartLossPendingMaterial load: %s"), HeartLossPendingMaterial ? *HeartLossPendingMaterial->GetPathName() : TEXT("FAILED"));
 }
 
 void AWA_PlayerController::BeginPlay()
@@ -199,6 +219,12 @@ void AWA_PlayerController::HandleTimerUpdated(float TimeLeft)
 	{
 		ProgressBar->SetPercent(Percent);
 	}
+}
+
+void AWA_PlayerController::HandleLivesChanged(int32 Lives)
+{
+	UE_LOG(LogWAPlayerController, Log, TEXT("HandleLivesChanged: Lives=%d LastDisplayedLives=%d HeartImages=%d"), Lives, LastDisplayedLives, HeartImages.Num());
+	UpdateHeartSprites(Lives);
 }
 
 void AWA_PlayerController::HandleComboChanged(int32 Combo, float Progress)
@@ -409,6 +435,8 @@ void AWA_PlayerController::BindGameStateEvents()
 	WAGameState->OnScoreChanged.AddDynamic(this, &AWA_PlayerController::HandleScoreChanged);
 	WAGameState->OnTimerUpdated.RemoveAll(this);
 	WAGameState->OnTimerUpdated.AddDynamic(this, &AWA_PlayerController::HandleTimerUpdated);
+	WAGameState->OnLivesChanged.RemoveAll(this);
+	WAGameState->OnLivesChanged.AddDynamic(this, &AWA_PlayerController::HandleLivesChanged);
 	WAGameState->OnComboChanged.RemoveAll(this);
 	WAGameState->OnComboChanged.AddDynamic(this, &AWA_PlayerController::HandleComboChanged);
 	WAGameState->OnScreenChanged.RemoveAll(this);
@@ -427,6 +455,7 @@ void AWA_PlayerController::RefreshWidgetsFromState()
 
 	HandleScoreChanged(WAGameState->Score);
 	HandleTimerUpdated(WAGameState->TimeLeft);
+	HandleLivesChanged(WAGameState->Lives);
 	HandleComboChanged(WAGameState->Combo, WAGameState->ComboProgress);
 	UpdateBestScore(WAGameState->BestScore);
 	if (!WAGameState->CurrentRound.Options.IsEmpty())
@@ -535,6 +564,146 @@ void AWA_PlayerController::CachePlayZoneControls()
 			OptionTexts.Add(FindFirstDescendantOfClass<UTextBlock>(SlotRoot));
 		}
 	}
+
+	CacheHeartImages();
+}
+
+void AWA_PlayerController::CacheHeartImages()
+{
+	HeartImages.Reset();
+
+	HeartImages.Add(FindNamedWidget<UImage>(PlayZoneWidget, TEXT("Image_Heart_1")));
+	HeartImages.Add(FindNamedWidget<UImage>(PlayZoneWidget, TEXT("Image_Heart_2")));
+	HeartImages.Add(FindNamedWidget<UImage>(PlayZoneWidget, TEXT("Image_Heart_3")));
+
+	const bool bExactNamesFound = HeartImages.Num() == 3 && HeartImages[0] && HeartImages[1] && HeartImages[2];
+	if (!bExactNamesFound)
+	{
+		UE_LOG(LogWAPlayerController, Warning, TEXT("CacheHeartImages: exact Image_Heart_1/2/3 lookup failed. Dumping all images and trying fallback."));
+
+		HeartImages.Reset();
+		TArray<UWidget*> AllPlayWidgets;
+		CollectDescendants(PlayZoneWidget, AllPlayWidgets);
+
+		for (UWidget* Widget : AllPlayWidgets)
+		{
+			UImage* Image = Cast<UImage>(Widget);
+			if (!Image)
+			{
+				continue;
+			}
+
+			UObject* Resource = Image->GetBrush().GetResourceObject();
+			const FString WidgetName = Image->GetName();
+			const FString ResourcePath = Resource ? Resource->GetPathName() : FString();
+			UE_LOG(LogWAPlayerController, Log, TEXT("CacheHeartImages: found image Name=%s Resource=%s"), *WidgetName, ResourcePath.IsEmpty() ? TEXT("none") : *ResourcePath);
+
+			const bool bLooksLikeHeart =
+				WidgetName.Contains(TEXT("Heart"), ESearchCase::IgnoreCase) ||
+				WidgetName.Contains(TEXT("Hesrt"), ESearchCase::IgnoreCase) ||
+				ResourcePath.Contains(TEXT("Heart"), ESearchCase::IgnoreCase);
+
+			if (bLooksLikeHeart)
+			{
+				HeartImages.Add(Image);
+			}
+		}
+
+		if (HeartImages.Num() > 3)
+		{
+			HeartImages.SetNum(3);
+		}
+	}
+
+	for (int32 Index = 0; Index < HeartImages.Num(); ++Index)
+	{
+		UE_LOG(LogWAPlayerController, Log, TEXT("CachePlayZoneControls: HeartImages[%d]=%s"), Index, HeartImages[Index] ? *HeartImages[Index]->GetName() : TEXT("NOT FOUND"));
+	}
+}
+
+void AWA_PlayerController::UpdateHeartSprites(int32 Lives)
+{
+	if (HeartImages.IsEmpty())
+	{
+		CachePlayZoneControls();
+	}
+
+	const int32 NewLostCount = GetLostHeartCount(Lives);
+	const int32 PreviousLostCount = GetLostHeartCount(LastDisplayedLives);
+	UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites: Lives=%d PreviousLives=%d PreviousLost=%d NewLost=%d HeartImages=%d"), Lives, LastDisplayedLives, PreviousLostCount, NewLostCount, HeartImages.Num());
+
+	if (Lives >= LastDisplayedLives)
+	{
+		UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites: lives increased/reset, applying direct state."));
+		for (int32 Index = 0; Index < HeartImages.Num(); ++Index)
+		{
+			UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites direct: HeartIndex=%d State=%s"), Index, Index < NewLostCount ? TEXT("LostMaterial") : TEXT("Alive"));
+			if (Index < NewLostCount)
+			{
+				SetHeartPendingMaterial(HeartImages[Index]);
+			}
+			else
+			{
+				SetHeartSprite(HeartImages[Index], HeartAliveSprite);
+			}
+		}
+		LastDisplayedLives = Lives;
+		return;
+	}
+
+	for (int32 Index = 0; Index < HeartImages.Num(); ++Index)
+	{
+		if (Index < PreviousLostCount)
+		{
+			UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites existing lost: HeartIndex=%d"), Index);
+			SetHeartPendingMaterial(HeartImages[Index]);
+		}
+		else if (Index >= NewLostCount)
+		{
+			UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites still alive: HeartIndex=%d"), Index);
+			SetHeartSprite(HeartImages[Index], HeartAliveSprite);
+		}
+	}
+
+	for (int32 Index = PreviousLostCount; Index < NewLostCount; ++Index)
+	{
+		UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites lost material requested: HeartIndex=%d"), Index);
+		SetHeartPendingMaterial(HeartImages.IsValidIndex(Index) ? HeartImages[Index] : nullptr);
+	}
+
+	LastDisplayedLives = Lives;
+}
+
+void AWA_PlayerController::SetHeartSprite(UImage* Image, UPaperSprite* Sprite) const
+{
+	if (!Image || !Sprite)
+	{
+		UE_LOG(LogWAPlayerController, Warning, TEXT("SetHeartSprite skipped: Image=%s Sprite=%s"), Image ? *Image->GetName() : TEXT("nullptr"), Sprite ? *Sprite->GetPathName() : TEXT("nullptr"));
+		return;
+	}
+
+	UE_LOG(LogWAPlayerController, Log, TEXT("SetHeartSprite: Image=%s Sprite=%s"), *Image->GetName(), *Sprite->GetPathName());
+	TScriptInterface<ISlateTextureAtlasInterface> AtlasRegion;
+	AtlasRegion.SetObject(Sprite);
+	AtlasRegion.SetInterface(Cast<ISlateTextureAtlasInterface>(Sprite));
+	Image->SetBrushFromAtlasInterface(AtlasRegion, true);
+}
+
+void AWA_PlayerController::SetHeartPendingMaterial(UImage* Image) const
+{
+	if (Image && HeartLossPendingMaterial)
+	{
+		UE_LOG(LogWAPlayerController, Log, TEXT("SetHeartPendingMaterial: Image=%s Material=%s"), *Image->GetName(), *HeartLossPendingMaterial->GetPathName());
+		Image->SetBrushFromMaterial(HeartLossPendingMaterial);
+		return;
+	}
+
+	UE_LOG(LogWAPlayerController, Warning, TEXT("SetHeartPendingMaterial skipped: Image=%s Material=%s"), Image ? *Image->GetName() : TEXT("nullptr"), HeartLossPendingMaterial ? *HeartLossPendingMaterial->GetPathName() : TEXT("nullptr"));
+}
+
+int32 AWA_PlayerController::GetLostHeartCount(int32 Lives) const
+{
+	return FMath::Clamp(3 - Lives, 0, 3);
 }
 
 void AWA_PlayerController::PlayWidgetAnimationByName(UUserWidget* Widget, FName AnimationName, bool bLoop)
