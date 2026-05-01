@@ -7,11 +7,14 @@
 #include "Animation/WidgetAnimation.h"
 #include "Components/Button.h"
 #include "Components/ContentWidget.h"
+#include "Components/Image.h"
 #include "Components/PanelWidget.h"
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
 #include "Gameplay/WA_GameMode.h"
 #include "MovieScene.h"
+#include "PaperSprite.h"
+#include "Slate/SlateTextureAtlasInterface.h"
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/UnrealType.h"
 
@@ -128,6 +131,18 @@ AWA_PlayerController::AWA_PlayerController()
 	{
 		FailClass = FailFinder.Class;
 	}
+
+	static ConstructorHelpers::FObjectFinder<UPaperSprite> HeartAliveSpriteFinder(TEXT("/Game/UI/UI_Elements/Heart/Heart_FLipTexture_Sprite_0.Heart_FLipTexture_Sprite_0"));
+	if (HeartAliveSpriteFinder.Succeeded())
+	{
+		HeartAliveSprite = HeartAliveSpriteFinder.Object;
+	}
+
+	static ConstructorHelpers::FObjectFinder<UPaperSprite> HeartLostSpriteFinder(TEXT("/Game/UI/UI_Elements/Heart/Heart_FLipTexture_Sprite_18.Heart_FLipTexture_Sprite_18"));
+	if (HeartLostSpriteFinder.Succeeded())
+	{
+		HeartLostSprite = HeartLostSpriteFinder.Object;
+	}
 }
 
 void AWA_PlayerController::BeginPlay()
@@ -199,6 +214,11 @@ void AWA_PlayerController::HandleTimerUpdated(float TimeLeft)
 	{
 		ProgressBar->SetPercent(Percent);
 	}
+}
+
+void AWA_PlayerController::HandleLivesChanged(int32 Lives)
+{
+	UpdateHeartSprites(Lives);
 }
 
 void AWA_PlayerController::HandleComboChanged(int32 Combo, float Progress)
@@ -409,6 +429,8 @@ void AWA_PlayerController::BindGameStateEvents()
 	WAGameState->OnScoreChanged.AddDynamic(this, &AWA_PlayerController::HandleScoreChanged);
 	WAGameState->OnTimerUpdated.RemoveAll(this);
 	WAGameState->OnTimerUpdated.AddDynamic(this, &AWA_PlayerController::HandleTimerUpdated);
+	WAGameState->OnLivesChanged.RemoveAll(this);
+	WAGameState->OnLivesChanged.AddDynamic(this, &AWA_PlayerController::HandleLivesChanged);
 	WAGameState->OnComboChanged.RemoveAll(this);
 	WAGameState->OnComboChanged.AddDynamic(this, &AWA_PlayerController::HandleComboChanged);
 	WAGameState->OnScreenChanged.RemoveAll(this);
@@ -427,6 +449,7 @@ void AWA_PlayerController::RefreshWidgetsFromState()
 
 	HandleScoreChanged(WAGameState->Score);
 	HandleTimerUpdated(WAGameState->TimeLeft);
+	HandleLivesChanged(WAGameState->Lives);
 	HandleComboChanged(WAGameState->Combo, WAGameState->ComboProgress);
 	UpdateBestScore(WAGameState->BestScore);
 	if (!WAGameState->CurrentRound.Options.IsEmpty())
@@ -524,6 +547,7 @@ void AWA_PlayerController::CachePlayZoneControls()
 {
 	OptionButtons.Reset();
 	OptionTexts.Reset();
+	HeartImages.Reset();
 
 	UWidget* WordsRoot = FindNamedWidget<UWidget>(PlayZoneWidget, TEXT("HorizontalBox_Words"));
 	if (UPanelWidget* WordsPanel = Cast<UPanelWidget>(WordsRoot))
@@ -535,6 +559,31 @@ void AWA_PlayerController::CachePlayZoneControls()
 			OptionTexts.Add(FindFirstDescendantOfClass<UTextBlock>(SlotRoot));
 		}
 	}
+
+	HeartImages.Add(FindNamedWidget<UImage>(PlayZoneWidget, TEXT("Image_Hesrt_1")));
+	HeartImages.Add(FindNamedWidget<UImage>(PlayZoneWidget, TEXT("Image_Hesrt_2")));
+	HeartImages.Add(FindNamedWidget<UImage>(PlayZoneWidget, TEXT("Image_Hesrt_3")));
+}
+
+void AWA_PlayerController::UpdateHeartSprites(int32 Lives)
+{
+	for (int32 Index = 0; Index < HeartImages.Num(); ++Index)
+	{
+		SetHeartSprite(HeartImages[Index], Index < Lives ? HeartAliveSprite : HeartLostSprite);
+	}
+}
+
+void AWA_PlayerController::SetHeartSprite(UImage* Image, UPaperSprite* Sprite) const
+{
+	if (!Image || !Sprite)
+	{
+		return;
+	}
+
+	TScriptInterface<ISlateTextureAtlasInterface> AtlasRegion;
+	AtlasRegion.SetObject(Sprite);
+	AtlasRegion.SetInterface(Cast<ISlateTextureAtlasInterface>(Sprite));
+	Image->SetBrushFromAtlasInterface(AtlasRegion, true);
 }
 
 void AWA_PlayerController::PlayWidgetAnimationByName(UUserWidget* Widget, FName AnimationName, bool bLoop)
