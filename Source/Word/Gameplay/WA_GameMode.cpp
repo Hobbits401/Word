@@ -7,6 +7,7 @@
 #include "Gameplay/WA_PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Save/WA_SaveGame.h"
+#include "Sound/SoundBase.h"
 #include "Systems/DifficultySystem.h"
 #include "Systems/TimerComponent.h"
 
@@ -15,6 +16,7 @@ AWA_GameMode::AWA_GameMode()
 	GameStateClass = AWA_GameState::StaticClass();
 	PlayerControllerClass = AWA_PlayerController::StaticClass();
 	TimerComponent = CreateDefaultSubobject<UTimerComponent>(TEXT("TimerComponent"));
+	LoadTeacherSounds();
 }
 
 void AWA_GameMode::BeginPlay()
@@ -45,6 +47,13 @@ void AWA_GameMode::BeginPlay()
 
 void AWA_GameMode::StartGame()
 {
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(DelayedGameOverTimerHandle);
+	}
+	bIsGameOverPending = false;
+	PendingGameOverReason.Reset();
+
 	LoadBestScore();
 
 	AWA_GameState* WAGameState = GetWAGameState();
@@ -72,7 +81,7 @@ void AWA_GameMode::StartGame()
 void AWA_GameMode::StartRound()
 {
 	AWA_GameState* WAGameState = GetWAGameState();
-	if (!WAGameState || !WAGameState->bIsGameActive || WAGameState->bIsPaused || !WordManager)
+	if (!WAGameState || !WAGameState->bIsGameActive || WAGameState->bIsPaused || bIsGameOverPending || !WordManager)
 	{
 		return;
 	}
@@ -92,7 +101,7 @@ void AWA_GameMode::StartRound()
 void AWA_GameMode::HandleAnswer(const FString& SelectedWord)
 {
 	AWA_GameState* WAGameState = GetWAGameState();
-	if (!WAGameState || !WAGameState->bIsGameActive || WAGameState->bIsPaused || !DifficultySystem)
+	if (!WAGameState || !WAGameState->bIsGameActive || WAGameState->bIsPaused || bIsGameOverPending || !DifficultySystem)
 	{
 		return;
 	}
@@ -105,6 +114,10 @@ void AWA_GameMode::HandleAnswer(const FString& SelectedWord)
 		WAGameState->SetCombo(NewCombo, CalculateComboProgress(NewCombo));
 		DifficultySystem->UpdateDifficultyByScore(NewScore);
 		TimerComponent->SetDrainMultiplier(DifficultySystem->GetTimerDrainMultiplier());
+		if (NewCombo > 0 && NewCombo % 2 == 0)
+		{
+			PlayRandomSound(GoodWordSounds);
+		}
 		StartRound();
 		return;
 	}
@@ -114,6 +127,12 @@ void AWA_GameMode::HandleAnswer(const FString& SelectedWord)
 
 void AWA_GameMode::EndGame(const FString& Reason)
 {
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(DelayedGameOverTimerHandle);
+	}
+	bIsGameOverPending = false;
+
 	AWA_GameState* WAGameState = GetWAGameState();
 	if (!WAGameState || !WAGameState->bIsGameActive)
 	{
@@ -132,6 +151,11 @@ void AWA_GameMode::EndGame(const FString& Reason)
 		WAGameState->SetBestScore(CurrentSaveGame->BestScore);
 		SaveBestScore();
 		bNewBestScore = true;
+	}
+
+	if (bNewBestScore)
+	{
+		PlaySound(NewRecordSound);
 	}
 
 	WAGameState->BroadcastGameOver(Reason, bNewBestScore);
@@ -171,6 +195,12 @@ void AWA_GameMode::ResumeGame()
 void AWA_GameMode::ReturnToMainMenu()
 {
 	TimerComponent->StopTimer();
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(DelayedGameOverTimerHandle);
+	}
+	bIsGameOverPending = false;
+	PendingGameOverReason.Reset();
 
 	if (AWA_GameState* WAGameState = GetWAGameState())
 	{
@@ -190,6 +220,7 @@ void AWA_GameMode::HandleTimerUpdated(float TimeLeft)
 
 void AWA_GameMode::HandleTimerExpired()
 {
+	PlaySound(TimerIsOverSound);
 	LoseLife(TEXT("Time is over"));
 }
 
@@ -233,11 +264,101 @@ void AWA_GameMode::LoseLife(const FString& Reason)
 
 	if (NewLives <= 0)
 	{
-		EndGame(Reason);
+		TimerComponent->StopTimer();
+		PlaySound(GameOverSound);
+		bIsGameOverPending = true;
+		PendingGameOverReason = Reason;
+		if (GetWorld())
+		{
+			GetWorld()->GetTimerManager().ClearTimer(DelayedGameOverTimerHandle);
+			GetWorld()->GetTimerManager().SetTimer(
+				DelayedGameOverTimerHandle,
+				this,
+				&AWA_GameMode::FinishDelayedGameOver,
+				GameOverDelay,
+				false);
+		}
+		else
+		{
+			FinishDelayedGameOver();
+		}
 		return;
 	}
 
+	PlayRandomSound(LifeLostSounds);
 	StartRound();
+}
+
+void AWA_GameMode::FinishDelayedGameOver()
+{
+	EndGame(PendingGameOverReason.IsEmpty() ? TEXT("Game over") : PendingGameOverReason);
+}
+
+void AWA_GameMode::LoadTeacherSounds()
+{
+	GoodWordSounds.Reset();
+	const TCHAR* GoodWordSoundPaths[] = {
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_1_YouAreCool.T_1_YouAreCool"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_2_StopIt_1.T_2_StopIt_1"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_3_StopIt_2.T_3_StopIt_2"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_4_Good.T_4_Good"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_5_Continue.T_5_Continue"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_6_More.T_6_More"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_7_MoreMore.T_7_MoreMore"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_8_MoreMoreMore.T_8_MoreMoreMore"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_9_YouAreMyBestStudent.T_9_YouAreMyBestStudent"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_10_Perfect.T_10_Perfect"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_11_MyBestStudent.T_11_MyBestStudent"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_12_Oya.T_12_Oya"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_13_Eeee.T_13_Eeee"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_14_Aa.T_14_Aa"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_15_A.T_15_A"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_16_A.T_16_A"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_17_Why.T_17_Why"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_18_Why.T_18_Why"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_19_Why.T_19_Why"),
+		TEXT("/Game/Music/Sounds/Teacher/GoodWords/T_20_EE.T_20_EE")
+	};
+
+	for (const TCHAR* SoundPath : GoodWordSoundPaths)
+	{
+		if (USoundBase* Sound = LoadObject<USoundBase>(nullptr, SoundPath))
+		{
+			GoodWordSounds.Add(Sound);
+		}
+	}
+
+	LifeLostSounds.Reset();
+	if (USoundBase* Sound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Music/Sounds/Teacher/T_GoHome.T_GoHome")))
+	{
+		LifeLostSounds.Add(Sound);
+	}
+	if (USoundBase* Sound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Music/Sounds/Teacher/T_GoAway.T_GoAway")))
+	{
+		LifeLostSounds.Add(Sound);
+	}
+
+	GameOverSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Music/Sounds/GameOver.GameOver"));
+	NewRecordSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Music/Sounds/New_Record.New_Record"));
+	TimerIsOverSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Music/Sounds/TimerIsOver.TimerIsOver"));
+}
+
+void AWA_GameMode::PlayRandomSound(const TArray<TObjectPtr<USoundBase>>& Sounds) const
+{
+	if (Sounds.IsEmpty())
+	{
+		return;
+	}
+
+	PlaySound(Sounds[FMath::RandRange(0, Sounds.Num() - 1)]);
+}
+
+void AWA_GameMode::PlaySound(USoundBase* Sound) const
+{
+	if (Sound)
+	{
+		UGameplayStatics::PlaySound2D(this, Sound);
+	}
 }
 
 void AWA_GameMode::ResetRoundTimer()

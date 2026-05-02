@@ -16,7 +16,7 @@ void UWordManager::StartGame()
 
 bool UWordManager::GenerateRound(FWordRound& OutRound)
 {
-	if (WordList.Num() < 4)
+	if (WordList.Num() < 5)
 	{
 		return false;
 	}
@@ -41,14 +41,14 @@ bool UWordManager::GenerateRound(FWordRound& OutRound)
 		if (Candidate != CorrectWord && !ContainsAllLetters(Candidate, Letters))
 		{
 			WrongOptions.Add(Candidate);
-			if (WrongOptions.Num() == 3)
+			if (WrongOptions.Num() == 4)
 			{
 				break;
 			}
 		}
 	}
 
-	if (WrongOptions.Num() < 3)
+	if (WrongOptions.Num() < 4)
 	{
 		return false;
 	}

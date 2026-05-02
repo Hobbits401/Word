@@ -5,10 +5,10 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Animation/WidgetAnimation.h"
+#include "Components/Border.h"
 #include "Components/Button.h"
 #include "Components/ContentWidget.h"
 #include "Components/Image.h"
-#include "Materials/MaterialInterface.h"
 #include "Components/PanelWidget.h"
 #include "Components/ProgressBar.h"
 #include "Components/TextBlock.h"
@@ -16,6 +16,9 @@
 #include "MovieScene.h"
 #include "PaperSprite.h"
 #include "Slate/SlateTextureAtlasInterface.h"
+#include "Engine/Texture2D.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/UnrealType.h"
 
@@ -142,12 +145,33 @@ AWA_PlayerController::AWA_PlayerController()
 	}
 	UE_LOG(LogWAPlayerController, Log, TEXT("HeartAliveSprite load: %s"), HeartAliveSprite ? *HeartAliveSprite->GetPathName() : TEXT("FAILED"));
 
-	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HeartLossPendingMaterialFinder(TEXT("/Game/UI/UI_Elements/Heart/All_Heart_Mat.All_Heart_Mat"));
-	if (HeartLossPendingMaterialFinder.Succeeded())
+	static ConstructorHelpers::FObjectFinder<UPaperSprite> HeartLostSpriteFinder(TEXT("/Game/UI/UI_Elements/Heart/Heart_FLipTexture_Sprite_18.Heart_FLipTexture_Sprite_18"));
+	if (HeartLostSpriteFinder.Succeeded())
 	{
-		HeartLossPendingMaterial = HeartLossPendingMaterialFinder.Object;
+		HeartLostSprite = HeartLostSpriteFinder.Object;
 	}
-	UE_LOG(LogWAPlayerController, Log, TEXT("HeartLossPendingMaterial load: %s"), HeartLossPendingMaterial ? *HeartLossPendingMaterial->GetPathName() : TEXT("FAILED"));
+	UE_LOG(LogWAPlayerController, Log, TEXT("HeartLostSprite load: %s"), HeartLostSprite ? *HeartLostSprite->GetPathName() : TEXT("FAILED"));
+
+	HeartLossSprites.Reset();
+	for (int32 FrameIndex = 0; FrameIndex <= 18; ++FrameIndex)
+	{
+		const FString SpritePath = FString::Printf(TEXT("/Game/UI/UI_Elements/Heart/Heart_FLipTexture_Sprite_%d.Heart_FLipTexture_Sprite_%d"), FrameIndex, FrameIndex);
+		UPaperSprite* FrameSprite = LoadObject<UPaperSprite>(nullptr, *SpritePath);
+		HeartLossSprites.Add(FrameSprite);
+		UE_LOG(LogWAPlayerController, Log, TEXT("HeartLossSprites[%d] load: %s"), FrameIndex, FrameSprite ? *FrameSprite->GetPathName() : TEXT("FAILED"));
+	}
+
+	BackgroundTextures.Reset();
+	for (int32 BackgroundIndex = 1; BackgroundIndex <= 7; ++BackgroundIndex)
+	{
+		const FString TexturePath = FString::Printf(TEXT("/Game/UI/UI_Elements/BackGround/BackGround_%d.BackGround_%d"), BackgroundIndex, BackgroundIndex);
+		UTexture2D* BackgroundTexture = LoadObject<UTexture2D>(nullptr, *TexturePath);
+		BackgroundTextures.Add(BackgroundTexture);
+		UE_LOG(LogWAPlayerController, Log, TEXT("BackgroundTextures[%d] load: %s"), BackgroundIndex - 1, BackgroundTexture ? *BackgroundTexture->GetPathName() : TEXT("FAILED"));
+	}
+
+	AlreadyNightSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Music/Sounds/Teacher/T_AlreadyNight_3.T_AlreadyNight_3"));
+	UE_LOG(LogWAPlayerController, Log, TEXT("AlreadyNightSound load: %s"), AlreadyNightSound ? *AlreadyNightSound->GetPathName() : TEXT("FAILED"));
 }
 
 void AWA_PlayerController::BeginPlay()
@@ -173,6 +197,7 @@ void AWA_PlayerController::HandleWordSelected(const FString& SelectedWord)
 
 void AWA_PlayerController::HandleRestartRequested()
 {
+	ResetPlayZoneBackground();
 	if (AWA_GameMode* WAGameMode = GetWAGameMode())
 	{
 		WAGameMode->RestartGame();
@@ -214,7 +239,7 @@ void AWA_PlayerController::HandleTimerUpdated(float TimeLeft)
 	SetText(PlayZoneWidget, TEXT("TextTimeCount"), FormatTimer(TimeLeft));
 
 	const AWA_GameState* WAGameState = GetWAGameState();
-	const float Percent = WAGameState ? FMath::Clamp(TimeLeft / WAGameState->RoundTimeLimit, 0.0f, 1.0f) : 0.0f;
+	const float Percent = WAGameState ? FMath::Clamp(1.0f - TimeLeft / WAGameState->RoundTimeLimit, 0.0f, 1.0f) : 0.0f;
 	if (UProgressBar* ProgressBar = FindNamedWidget<UProgressBar>(PlayZoneWidget, TEXT("ProgressBar_Timer")))
 	{
 		ProgressBar->SetPercent(Percent);
@@ -229,7 +254,8 @@ void AWA_PlayerController::HandleLivesChanged(int32 Lives)
 
 void AWA_PlayerController::HandleComboChanged(int32 Combo, float Progress)
 {
-	SetText(PlayZoneWidget, TEXT("Text_Combo"), FText::Format(NSLOCTEXT("WordAttack", "ComboFormat", "COMBO x {0}"), Combo));
+	SetText(PlayZoneWidget, TEXT("Text_Combo"), FText::Format(NSLOCTEXT("WordAttack", "ComboFormat", "Комбо x {0}"), Combo));
+	UpdateBackgroundByCombo(Combo);
 	if (UProgressBar* ProgressBar = FindNamedWidget<UProgressBar>(PlayZoneWidget, TEXT("ProgressBar_Combo")))
 	{
 		ProgressBar->SetPercent(Progress);
@@ -273,6 +299,7 @@ void AWA_PlayerController::HandleGameOver(const FString& Reason, int32 FinalScor
 
 void AWA_PlayerController::HandlePlayClicked()
 {
+	ResetPlayZoneBackground();
 	if (AWA_GameMode* WAGameMode = GetWAGameMode())
 	{
 		WAGameMode->StartGame();
@@ -619,6 +646,59 @@ void AWA_PlayerController::CacheHeartImages()
 	{
 		UE_LOG(LogWAPlayerController, Log, TEXT("CachePlayZoneControls: HeartImages[%d]=%s"), Index, HeartImages[Index] ? *HeartImages[Index]->GetName() : TEXT("NOT FOUND"));
 	}
+
+	HeartLossTimerHandles.SetNum(HeartImages.Num());
+	HeartLossFrameIndices.Init(0, HeartImages.Num());
+}
+
+void AWA_PlayerController::UpdateBackgroundByCombo(int32 Combo)
+{
+	if (BackgroundTextures.IsEmpty())
+	{
+		return;
+	}
+
+	if (Combo <= 0)
+	{
+		return;
+	}
+
+	if (Combo % 5 == 0)
+	{
+		SetPlayZoneBackground(FMath::Clamp(CurrentBackgroundIndex + 1, 0, BackgroundTextures.Num() - 1));
+	}
+}
+
+void AWA_PlayerController::ResetPlayZoneBackground()
+{
+	CurrentBackgroundIndex = INDEX_NONE;
+	bAlreadyNightSoundPlayed = false;
+	SetPlayZoneBackground(0);
+}
+
+void AWA_PlayerController::SetPlayZoneBackground(int32 BackgroundIndex)
+{
+	if (!BackgroundTextures.IsValidIndex(BackgroundIndex) || !BackgroundTextures[BackgroundIndex])
+	{
+		return;
+	}
+
+	if (UBorder* BackgroundBorder = FindNamedWidget<UBorder>(PlayZoneWidget, TEXT("Border_BackGround_1")))
+	{
+		if (CurrentBackgroundIndex == BackgroundIndex)
+		{
+			return;
+		}
+
+		BackgroundBorder->SetBrushFromTexture(BackgroundTextures[BackgroundIndex]);
+		CurrentBackgroundIndex = BackgroundIndex;
+
+		if (BackgroundIndex == 6 && !bAlreadyNightSoundPlayed && AlreadyNightSound)
+		{
+			bAlreadyNightSoundPlayed = true;
+			UGameplayStatics::PlaySound2D(this, AlreadyNightSound);
+		}
+	}
 }
 
 void AWA_PlayerController::UpdateHeartSprites(int32 Lives)
@@ -635,12 +715,20 @@ void AWA_PlayerController::UpdateHeartSprites(int32 Lives)
 	if (Lives >= LastDisplayedLives)
 	{
 		UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites: lives increased/reset, applying direct state."));
+		for (FTimerHandle& TimerHandle : HeartLossTimerHandles)
+		{
+			if (GetWorld())
+			{
+				GetWorld()->GetTimerManager().ClearTimer(TimerHandle);
+			}
+		}
+
 		for (int32 Index = 0; Index < HeartImages.Num(); ++Index)
 		{
-			UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites direct: HeartIndex=%d State=%s"), Index, Index < NewLostCount ? TEXT("LostMaterial") : TEXT("Alive"));
+			UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites direct: HeartIndex=%d State=%s"), Index, Index < NewLostCount ? TEXT("LostSprite") : TEXT("Alive"));
 			if (Index < NewLostCount)
 			{
-				SetHeartPendingMaterial(HeartImages[Index]);
+				SetHeartSprite(HeartImages[Index], HeartLostSprite);
 			}
 			else
 			{
@@ -656,7 +744,7 @@ void AWA_PlayerController::UpdateHeartSprites(int32 Lives)
 		if (Index < PreviousLostCount)
 		{
 			UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites existing lost: HeartIndex=%d"), Index);
-			SetHeartPendingMaterial(HeartImages[Index]);
+			SetHeartSprite(HeartImages[Index], HeartLossSprites.IsValidIndex(18) ? HeartLossSprites[18] : HeartLostSprite);
 		}
 		else if (Index >= NewLostCount)
 		{
@@ -667,8 +755,8 @@ void AWA_PlayerController::UpdateHeartSprites(int32 Lives)
 
 	for (int32 Index = PreviousLostCount; Index < NewLostCount; ++Index)
 	{
-		UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites lost material requested: HeartIndex=%d"), Index);
-		SetHeartPendingMaterial(HeartImages.IsValidIndex(Index) ? HeartImages[Index] : nullptr);
+		UE_LOG(LogWAPlayerController, Log, TEXT("UpdateHeartSprites transition requested: HeartIndex=%d"), Index);
+		StartHeartLossTransition(Index);
 	}
 
 	LastDisplayedLives = Lives;
@@ -689,16 +777,63 @@ void AWA_PlayerController::SetHeartSprite(UImage* Image, UPaperSprite* Sprite) c
 	Image->SetBrushFromAtlasInterface(AtlasRegion, true);
 }
 
-void AWA_PlayerController::SetHeartPendingMaterial(UImage* Image) const
+void AWA_PlayerController::StartHeartLossTransition(int32 HeartIndex)
 {
-	if (Image && HeartLossPendingMaterial)
+	if (!HeartImages.IsValidIndex(HeartIndex) || !HeartImages[HeartIndex] || !GetWorld())
 	{
-		UE_LOG(LogWAPlayerController, Log, TEXT("SetHeartPendingMaterial: Image=%s Material=%s"), *Image->GetName(), *HeartLossPendingMaterial->GetPathName());
-		Image->SetBrushFromMaterial(HeartLossPendingMaterial);
+		UE_LOG(LogWAPlayerController, Warning, TEXT("StartHeartLossTransition skipped: HeartIndex=%d IsValid=%s Image=%s World=%s"),
+			HeartIndex,
+			HeartImages.IsValidIndex(HeartIndex) ? TEXT("true") : TEXT("false"),
+			HeartImages.IsValidIndex(HeartIndex) && HeartImages[HeartIndex] ? *HeartImages[HeartIndex]->GetName() : TEXT("nullptr"),
+			GetWorld() ? TEXT("valid") : TEXT("nullptr"));
 		return;
 	}
 
-	UE_LOG(LogWAPlayerController, Warning, TEXT("SetHeartPendingMaterial skipped: Image=%s Material=%s"), Image ? *Image->GetName() : TEXT("nullptr"), HeartLossPendingMaterial ? *HeartLossPendingMaterial->GetPathName() : TEXT("nullptr"));
+	UE_LOG(LogWAPlayerController, Log, TEXT("StartHeartLossTransition: HeartIndex=%d Image=%s FrameDelay=0.05"), HeartIndex, *HeartImages[HeartIndex]->GetName());
+	if (HeartLossFrameIndices.IsValidIndex(HeartIndex))
+	{
+		HeartLossFrameIndices[HeartIndex] = 0;
+	}
+	SetHeartSprite(HeartImages[HeartIndex], HeartLossSprites.IsValidIndex(0) ? HeartLossSprites[0] : HeartAliveSprite);
+
+	if (HeartLossTimerHandles.IsValidIndex(HeartIndex))
+	{
+		GetWorld()->GetTimerManager().ClearTimer(HeartLossTimerHandles[HeartIndex]);
+		GetWorld()->GetTimerManager().SetTimer(
+			HeartLossTimerHandles[HeartIndex],
+			FTimerDelegate::CreateUObject(this, &AWA_PlayerController::AdvanceHeartLossFrame, HeartIndex),
+			0.05f,
+			true);
+		UE_LOG(LogWAPlayerController, Log, TEXT("StartHeartLossTransition: timer set for HeartIndex=%d"), HeartIndex);
+	}
+	else
+	{
+		UE_LOG(LogWAPlayerController, Warning, TEXT("StartHeartLossTransition: no timer handle slot for HeartIndex=%d"), HeartIndex);
+	}
+}
+
+void AWA_PlayerController::AdvanceHeartLossFrame(int32 HeartIndex)
+{
+	if (!HeartImages.IsValidIndex(HeartIndex) || !HeartImages[HeartIndex] || !HeartLossFrameIndices.IsValidIndex(HeartIndex))
+	{
+		UE_LOG(LogWAPlayerController, Warning, TEXT("AdvanceHeartLossFrame skipped: HeartIndex=%d"), HeartIndex);
+		return;
+	}
+
+	HeartLossFrameIndices[HeartIndex]++;
+	const int32 FrameIndex = FMath::Clamp(HeartLossFrameIndices[HeartIndex], 0, 18);
+	UE_LOG(LogWAPlayerController, Log, TEXT("AdvanceHeartLossFrame: HeartIndex=%d FrameIndex=%d Image=%s"),
+		HeartIndex,
+		FrameIndex,
+		*HeartImages[HeartIndex]->GetName());
+
+	SetHeartSprite(HeartImages[HeartIndex], HeartLossSprites.IsValidIndex(FrameIndex) ? HeartLossSprites[FrameIndex] : HeartLostSprite);
+
+	if (FrameIndex >= 18 && GetWorld() && HeartLossTimerHandles.IsValidIndex(HeartIndex))
+	{
+		GetWorld()->GetTimerManager().ClearTimer(HeartLossTimerHandles[HeartIndex]);
+		UE_LOG(LogWAPlayerController, Log, TEXT("AdvanceHeartLossFrame: completed HeartIndex=%d"), HeartIndex);
+	}
 }
 
 int32 AWA_PlayerController::GetLostHeartCount(int32 Lives) const

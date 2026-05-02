@@ -4,17 +4,20 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "TimerManager.h"
 #include "Core/WordTypes.h"
 #include "Gameplay/WA_GameState.h"
 #include "WA_PlayerController.generated.h"
 
 class AWA_GameMode;
+class UBorder;
 class UButton;
 class UImage;
-class UMaterialInterface;
 class UPaperSprite;
 class UProgressBar;
+class USoundBase;
 class UTextBlock;
+class UTexture2D;
 class UUserWidget;
 class UWidgetAnimation;
 
@@ -57,7 +60,7 @@ protected:
 	TObjectPtr<UPaperSprite> HeartAliveSprite;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Word Attack|UI")
-	TObjectPtr<UMaterialInterface> HeartLossPendingMaterial;
+	TObjectPtr<UPaperSprite> HeartLostSprite;
 
 private:
 	UPROPERTY()
@@ -88,10 +91,24 @@ private:
 	TArray<TObjectPtr<UImage>> HeartImages;
 
 	UPROPERTY()
+	TArray<TObjectPtr<UPaperSprite>> HeartLossSprites;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UTexture2D>> BackgroundTextures;
+
+	UPROPERTY()
+	TObjectPtr<USoundBase> AlreadyNightSound;
+
+	TArray<FTimerHandle> HeartLossTimerHandles;
+	TArray<int32> HeartLossFrameIndices;
+
+	UPROPERTY()
 	TArray<FString> OptionWords;
 
 	bool bPendingFailAfterNewScore = false;
 	int32 LastDisplayedLives = 3;
+	int32 CurrentBackgroundIndex = INDEX_NONE;
+	bool bAlreadyNightSoundPlayed = false;
 
 	UFUNCTION()
 	void HandleRoundUpdated(const FWordRound& Round);
@@ -168,9 +185,13 @@ private:
 	void UpdateOptionClicked(int32 OptionIndex);
 	void CachePlayZoneControls();
 	void CacheHeartImages();
+	void UpdateBackgroundByCombo(int32 Combo);
+	void ResetPlayZoneBackground();
+	void SetPlayZoneBackground(int32 BackgroundIndex);
 	void UpdateHeartSprites(int32 Lives);
 	void SetHeartSprite(UImage* Image, UPaperSprite* Sprite) const;
-	void SetHeartPendingMaterial(UImage* Image) const;
+	void StartHeartLossTransition(int32 HeartIndex);
+	void AdvanceHeartLossFrame(int32 HeartIndex);
 	int32 GetLostHeartCount(int32 Lives) const;
 	void PlayWidgetAnimationByName(UUserWidget* Widget, FName AnimationName, bool bLoop);
 	void StopWidgetAnimationByName(UUserWidget* Widget, FName AnimationName);
